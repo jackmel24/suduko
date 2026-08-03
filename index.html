@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F5F6F1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171A" media="(prefers-color-scheme: dark)">
+<!-- These two lines make the page launch full-screen when added to the iPhone home screen -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- The home-screen icon: a red hanko seal, drawn to match the victory stamp -->
+<link rel="apple-touch-icon" sizes="180x180" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>数独 Sudoku</title>
+
+<!-- ================================================================
+     数独 SUDOKU — a single-file game
+     ----------------------------------------------------------------
+     Everything lives in this one file so it can be saved to a phone
+     and played offline. Table of contents:
+
+       1. STYLES ........... the look (washi paper, indigo pen, seal red)
+       2. LAYOUT ........... the HTML skeleton
+       3. PUZZLE ENGINE .... generator + solver (pure logic, no DOM)
+       4. GAME STATE ....... one object holding the whole game
+       5. RENDERING ........ drawing state onto the screen
+       6. ACTIONS .......... placing numbers, notes, erase, undo, hint
+       7. TIMER & SETTINGS
+       8. BOOT ............. wiring buttons and starting up
+     ================================================================ -->
+
+<style>
+/* ============================================================
+   1. STYLES
+   Palette: "washi & ink". Paper background, sumi-ink structure,
+   indigo (ai) for everything YOU do, seal-red (shu) for mistakes
+   and the victory stamp.
+   ============================================================ */
+:root {
+  --washi: #F5F6F1;      /* page background — cool paper       */
+  --cell:  #FDFDFA;      /* board cells                        */
+  --sumi:  #24272E;      /* ink — text & strong lines          */
+  --muted: #8B8E86;      /* quiet labels                       */
+  --line:  #CFCEC2;      /* thin grid lines                    */
+  --ai:    #3D5A96;      /* indigo — your entries & selection  */
+  --ai-soft:   #E3E9F4;  /* selected cell fill                 */
+  --ai-faint:  #EDF1F8;  /* same-number highlight              */
+  --peer:  #EEEFE8;      /* row/column/box of selection        */
+  --shu:   #BE3A2B;      /* seal red — mistakes & the stamp    */
+  --shu-soft:  #F7E4E0;  /* mistake cell fill                  */
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --washi: #15171A;
+    --cell:  #1D2025;
+    --sumi:  #E7E7E2;
+    --muted: #8D919B;
+    --line:  #32363D;
+    --ai:    #93AEDF;
+    --ai-soft:  #253048;
+    --ai-faint: #21293A;
+    --peer:  #20232A;
+    --shu:   #E06A55;
+    --shu-soft: #3A2420;
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--washi);
+  color: var(--sumi);
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+button {
+  font: inherit; color: inherit; background: none; border: none;
+  padding: 0; cursor: pointer; touch-action: manipulation;
+  -webkit-user-select: none; user-select: none;
+}
+button:focus-visible, .cell:focus-visible {
+  outline: 2px solid var(--ai); outline-offset: 2px; border-radius: 6px;
+}
+
+.app {
+  width: min(100vw - 24px, 430px);
+  padding: 10px 0 18px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+/* ---------- header ---------- */
+header { display: flex; align-items: baseline; gap: 8px; padding: 2px 2px 0; }
+.kanji {
+  font-family: ui-serif, "Hiragino Mincho ProN", Georgia, serif;
+  font-size: 24px; font-weight: 600; line-height: 1;
+}
+.wordmark {
+  font-size: 11px; letter-spacing: 0.22em; color: var(--muted);
+  text-transform: uppercase;
+}
+header .spacer { flex: 1; }
+.icon-btn { font-size: 20px; color: var(--muted); padding: 4px 6px; }
+
+/* ---------- status row ---------- */
+.status {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px; color: var(--muted); padding: 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.chip {
+  border: 1.5px solid var(--shu); color: var(--shu);
+  border-radius: 6px; padding: 2px 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.status .spacer { flex: 1; }
+.link-btn { color: var(--ai); font-weight: 600; font-size: 13px; padding: 4px 2px; }
+.hidden { display: none !important; }
+
+/* ---------- the board ---------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  border: 2px solid var(--sumi);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--line);
+  aspect-ratio: 1;
+  width: 100%;
+}
+.cell {
+  background: var(--cell);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  display: grid; place-items: center;
+  position: relative;
+  -webkit-user-select: none; user-select: none;
+}
+.cell.br { border-right: 2px solid var(--sumi); }   /* thick 3×3 walls  */
+.cell.bb { border-bottom: 2px solid var(--sumi); }
+.cell:nth-child(9n)      { border-right: none; }
+.cell:nth-child(n + 73)  { border-bottom: none; }
+
+.cell .val {
+  font-family: ui-rounded, -apple-system, system-ui, sans-serif;
+  font-size: clamp(17px, 5.6vw, 27px);
+  font-weight: 500;
+  color: var(--ai);                    /* your entries: indigo pen  */
+}
+.cell.given .val { color: var(--sumi); font-weight: 600; }  /* printed clues: ink */
+
+.cell.peer { background: var(--peer); }
+.cell.same { background: var(--ai-faint); }
+.cell.sel  { background: var(--ai-soft); box-shadow: inset 0 0 0 2px var(--ai); }
+.cell.err .val { color: var(--shu); }
+.cell.err { background: var(--shu-soft); }
+
+.notes {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  width: 100%; height: 100%; padding: 7%;
+}
+.notes span {
+  display: grid; place-items: center;
+  font-size: clamp(7px, 2.1vw, 10px);
+  color: var(--muted); font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- tool row ---------- */
+.tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tool {
+  background: var(--cell);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 11px 0;
+  font-size: 13.5px; font-weight: 600;
+  transition: background 0.15s;
+}
+.tool:active { background: var(--peer); }
+.tool.active { background: var(--ai); border-color: var(--ai); color: var(--cell); }
+
+/* ---------- number pad ---------- */
+.pad { display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px; }
+.num {
+  background: var(--cell);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 0 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+}
+.num:active { background: var(--ai-soft); }
+.num .d {
+  font-family: ui-rounded, -apple-system, system-ui, sans-serif;
+  font-size: 21px; font-weight: 600;
+}
+.num .cnt { font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.num.done { opacity: 0.28; }
+
+/* ---------- overlays (new game / settings / win) ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(20, 22, 25, 0.45);
+  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.card {
+  background: var(--washi);
+  border-radius: 20px;
+  padding: 22px 20px;
+  width: min(100%, 330px);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.3);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.card h2 { margin: 0 0 4px; font-size: 17px; letter-spacing: 0.02em; }
+.row-btn {
+  display: flex; justify-content: space-between; align-items: baseline;
+  background: var(--cell); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 13px 15px;
+  font-weight: 600; font-size: 15px;
+}
+.row-btn small { color: var(--muted); font-weight: 500; font-size: 12px; }
+.row-btn:active { background: var(--peer); }
+.primary {
+  background: var(--shu); color: #FFF;
+  border-radius: var(--radius); padding: 13px;
+  font-weight: 700; font-size: 15px; text-align: center;
+}
+.ghost { color: var(--muted); font-size: 13.5px; padding: 8px; text-align: center; }
+
+/* settings toggles */
+.setting { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+.setting .txt { flex: 1; }
+.setting .txt b { display: block; font-size: 14.5px; }
+.setting .txt small { color: var(--muted); font-size: 12px; }
+.switch { position: relative; width: 46px; height: 28px; flex: none; }
+.switch input { opacity: 0; width: 100%; height: 100%; position: absolute; margin: 0; }
+.slider {
+  position: absolute; inset: 0; background: var(--line);
+  border-radius: 999px; transition: background 0.2s; pointer-events: none;
+}
+.slider::before {
+  content: ""; position: absolute; width: 22px; height: 22px;
+  left: 3px; top: 3px; background: #FFF; border-radius: 50%;
+  transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.switch input:checked + .slider { background: var(--ai); }
+.switch input:checked + .slider::before { transform: translateX(18px); }
+
+/* ---------- the victory seal (hanko stamp) ---------- */
+.stamp {
+  width: 96px; height: 96px; margin: 4px auto 2px;
+  border: 3.5px solid var(--shu); border-radius: 50%;
+  color: var(--shu);
+  display: grid; place-items: center;
+  font-family: ui-serif, "Hiragino Mincho ProN", Georgia, serif;
+  font-size: 46px; font-weight: 700;
+  transform: rotate(-8deg);
+  box-shadow: inset 0 0 0 1.5px var(--shu-soft);
+}
+.stamp-in { animation: stamp 0.45s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+@keyframes stamp {
+  0%   { transform: rotate(-20deg) scale(1.9); opacity: 0; }
+  60%  { transform: rotate(-6deg)  scale(0.94); opacity: 1; }
+  100% { transform: rotate(-8deg)  scale(1); }
+}
+.win-stats { text-align: center; color: var(--muted); font-size: 13.5px; line-height: 1.7; }
+.win-stats b { color: var(--sumi); }
+h2.center { text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+
+<body>
+<!-- ============================================================
+     2. LAYOUT
+     ============================================================ -->
+<div class="app">
+
+  <header>
+    <span class="kanji">数独</span>
+    <span class="wordmark">Sudoku</span>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="btnGear" aria-label="Settings">⚙&#xFE0E;</button>
+  </header>
+
+  <div class="status">
+    <span class="chip" id="diffChip">—</span>
+    <span id="timer">0:00</span>
+    <span id="mist" class="hidden">0 mistakes</span>
+    <span class="spacer"></span>
+    <button class="link-btn" id="btnNew">New game</button>
+  </div>
+
+  <div class="grid" id="grid" aria-label="Sudoku board"></div>
+
+  <div class="tools">
+    <button class="tool" id="btnUndo">Undo</button>
+    <button class="tool" id="btnErase">Erase</button>
+    <button class="tool" id="btnNotes">Notes</button>
+    <button class="tool" id="btnHint">Hint</button>
+  </div>
+
+  <div class="pad" id="pad">
+    <!-- nine digit buttons; the small number underneath counts how
+         many of that digit are still missing from the board -->
+  </div>
+</div>
+
+<!-- new game chooser -->
+<div class="overlay hidden" id="ovNew">
+  <div class="card">
+    <h2>New game</h2>
+    <button class="row-btn" data-d="easy">Easy <small>relaxed · 42 clues</small></button>
+    <button class="row-btn" data-d="medium">Medium <small>thoughtful · 34 clues</small></button>
+    <button class="row-btn" data-d="hard">Hard <small>demanding · 29 clues</small></button>
+    <button class="row-btn" data-d="expert">Expert <small>ruthless · ~25 clues</small></button>
+    <button class="ghost" id="newCancel">Cancel</button>
+  </div>
+</div>
+
+<!-- settings -->
+<div class="overlay hidden" id="ovSettings">
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="setting">
+      <span class="txt"><b>Show timer</b><small>Hide it to play without pressure</small></span>
+      <span class="switch"><input type="checkbox" id="chkTimer" checked><span class="slider"></span></span>
+    </div>
+    <div class="setting">
+      <span class="txt"><b>Check mistakes</b><small>Wrong numbers turn seal-red</small></span>
+      <span class="switch"><input type="checkbox" id="chkCheck" checked><span class="slider"></span></span>
+    </div>
+    <button class="primary" id="setDone">Done</button>
+  </div>
+</div>
+
+<!-- victory -->
+<div class="overlay hidden" id="ovWin">
+  <div class="card">
+    <div class="stamp" id="stamp"><span>解</span></div>
+    <h2 class="center">Solved</h2>
+    <div class="win-stats" id="winStats"></div>
+    <button class="primary" id="btnAgain">Play again</button>
+    <button class="ghost" id="btnChange">Change difficulty</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ENGINE-START */
+/* ============================================================
+   3. PUZZLE ENGINE  (pure logic — no DOM, so it's easy to test)
+
+   The whole trick of sudoku generation in three steps:
+     a) fillGrid()       — build a COMPLETE valid grid by placing
+                           random digits with backtracking.
+     b) countSolutions() — a solver that counts how many solutions
+                           a grid has (we only care about 1 vs 2+).
+     c) generatePuzzle() — remove digits one by one, but only keep
+                           a removal if the puzzle STILL has exactly
+                           one solution. Stop at the difficulty's
+                           target clue count.
+
+   The board is a flat array of 81 numbers. 0 means empty.
+   Index i maps to row = Math.floor(i / 9), column = i % 9.
+   ============================================================ */
+
+const DIFFICULTY = {
+  easy:   { label: 'Easy',   clues: 42 },
+  medium: { label: 'Medium', clues: 34 },
+  hard:   { label: 'Hard',   clues: 29 },
+  expert: { label: 'Expert', clues: 25 },
+};
+
+/** Fisher–Yates shuffle: returns a randomly ordered copy of an array. */
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** Can digit v legally go at index idx? (no clash in row, column, box) */
+function canPlace(grid, idx, v) {
+  const r = Math.floor(idx / 9), c = idx % 9;
+  for (let k = 0; k < 9; k++) {
+    if (grid[r * 9 + k] === v) return false;          // row
+    if (grid[k * 9 + c] === v) return false;          // column
+  }
+  const br = r - (r % 3), bc = c - (c % 3);           // top-left of 3×3 box
+  for (let dr = 0; dr < 3; dr++)
+    for (let dc = 0; dc < 3; dc++)
+      if (grid[(br + dr) * 9 + (bc + dc)] === v) return false;
+  return true;
+}
+
+/**
+ * Fill the grid completely using backtracking.
+ * We try digits in RANDOM order, which is what makes every
+ * generated grid different. Mutates `grid`, returns true on success.
+ */
+function fillGrid(grid) {
+  const idx = grid.indexOf(0);
+  if (idx === -1) return true;                        // no empties → done
+  for (const v of shuffled([1, 2, 3, 4, 5, 6, 7, 8, 9])) {
+    if (canPlace(grid, idx, v)) {
+      grid[idx] = v;
+      if (fillGrid(grid)) return true;
+      grid[idx] = 0;                                  // undo & try next digit
+    }
+  }
+  return false;                                       // dead end → backtrack
+}
+
+/**
+ * Count solutions, stopping early once `limit` is reached.
+ * Uses the "fewest candidates first" heuristic (MRV) which makes
+ * it fast: always branch on the most constrained empty cell.
+ * Mutates `grid` while working but restores it as it backtracks.
+ */
+function countSolutions(grid, limit = 2) {
+  let count = 0;
+  function solve() {
+    if (count >= limit) return;
+    // find the empty cell with the fewest legal digits
+    let best = -1, bestCands = null;
+    for (let i = 0; i < 81; i++) {
+      if (grid[i] !== 0) continue;
+      const cands = [];
+      for (let v = 1; v <= 9; v++) if (canPlace(grid, i, v)) cands.push(v);
+      if (cands.length === 0) return;                 // contradiction → backtrack
+      if (!bestCands || cands.length < bestCands.length) {
+        best = i; bestCands = cands;
+        if (cands.length === 1) break;                // can't do better than 1
+      }
+    }
+    if (best === -1) { count++; return; }             // grid full → 1 solution found
+    for (const v of bestCands) {
+      grid[best] = v;
+      solve();
+      grid[best] = 0;
+      if (count >= limit) return;
+    }
+  }
+  solve();
+  return count;
+}
+
+/**
+ * Make a puzzle: full grid, then carve holes while the solution
+ * stays unique. Returns { puzzle, solution } as 81-length arrays.
+ */
+function generatePuzzle(difficulty) {
+  const solution = new Array(81).fill(0);
+  fillGrid(solution);
+
+  const puzzle = solution.slice();
+  const target = DIFFICULTY[difficulty].clues;
+  let clues = 81;
+
+  for (const idx of shuffled([...Array(81).keys()])) {
+    if (clues <= target) break;
+    const saved = puzzle[idx];
+    puzzle[idx] = 0;
+    if (countSolutions(puzzle.slice(), 2) !== 1) {
+      puzzle[idx] = saved;                            // removal broke uniqueness
+    } else {
+      clues--;
+    }
+  }
+  return { puzzle, solution };
+}
+/* ENGINE-END */
+
+/* ============================================================
+   4. GAME STATE
+   One object (S) holds everything about the current game, and
+   one object (settings) holds the two toggles. Every action
+   changes S, then calls render() to redraw. That one-way flow
+   (state → screen) keeps the whole app easy to reason about.
+   ============================================================ */
+
+const S = {
+  board: [],        // current numbers (0 = empty)
+  solution: [],     // the answer key
+  given: [],        // true where the puzzle printed a clue
+  notes: [],        // 81 Sets of pencil-marked digits
+  selected: -1,     // index of the selected cell, -1 = none
+  notesMode: false,
+  difficulty: 'medium',
+  mistakes: 0,
+  hints: 0,
+  seconds: 0,
+  finished: false,
+  undo: [],         // snapshots of {board, notes} before each change
+};
+
+const settings = { showTimer: true, autoCheck: true };
+
+/** PEERS[i] = the 20 cells sharing a row, column or box with i. */
+const PEERS = [];
+for (let i = 0; i < 81; i++) {
+  const set = new Set();
+  const r = Math.floor(i / 9), c = i % 9;
+  for (let k = 0; k < 9; k++) { set.add(r * 9 + k); set.add(k * 9 + c); }
+  const br = r - (r % 3), bc = c - (c % 3);
+  for (let dr = 0; dr < 3; dr++)
+    for (let dc = 0; dc < 3; dc++) set.add((br + dr) * 9 + (bc + dc));
+  set.delete(i);
+  PEERS.push([...set]);
+}
+
+/* ============================================================
+   5. RENDERING
+   ============================================================ */
+
+const el = (id) => document.getElementById(id);
+const gridEl = el('grid');
+const cells = [];        // the 81 <div class="cell"> elements
+const padBtns = [];      // the 9 digit buttons
+
+/** Build the 81 cells and 9 pad buttons once, at startup. */
+function buildBoard() {
+  for (let i = 0; i < 81; i++) {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    if (i % 9 === 2 || i % 9 === 5) d.classList.add('br');
+    const row = Math.floor(i / 9);
+    if (row === 2 || row === 5) d.classList.add('bb');
+    d.addEventListener('pointerdown', () => { S.selected = i; render(); });
+    gridEl.appendChild(d);
+    cells.push(d);
+  }
+  const pad = el('pad');
+  for (let v = 1; v <= 9; v++) {
+    const b = document.createElement('button');
+    b.className = 'num';
+    b.innerHTML = `<span class="d">${v}</span><span class="cnt"></span>`;
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); placeNumber(v); });
+    pad.appendChild(b);
+    padBtns.push(b);
+  }
+}
+
+/** Redraw everything from state. Called after every action. */
+function render() {
+  const sel = S.selected;
+  const sameVal = sel >= 0 ? S.board[sel] : 0;
+  const selPeers = sel >= 0 ? new Set(PEERS[sel]) : null;
+  const counts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+  for (let i = 0; i < 81; i++) {
+    const v = S.board[i];
+    if (v) counts[v]++;
+    const d = cells[i];
+    d.className = 'cell'
+      + (i % 9 === 2 || i % 9 === 5 ? ' br' : '')
+      + (Math.floor(i / 9) === 2 || Math.floor(i / 9) === 5 ? ' bb' : '')
+      + (S.given[i] ? ' given' : '')
+      + (selPeers && selPeers.has(i) ? ' peer' : '')
+      + (v && v === sameVal && i !== sel ? ' same' : '')
+      + (i === sel ? ' sel' : '')
+      + (settings.autoCheck && v && !S.given[i] && v !== S.solution[i] ? ' err' : '');
+
+    if (v) {
+      d.innerHTML = `<span class="val">${v}</span>`;
+    } else if (S.notes[i] && S.notes[i].size) {
+      let html = '<div class="notes">';
+      for (let n = 1; n <= 9; n++) html += `<span>${S.notes[i].has(n) ? n : ''}</span>`;
+      d.innerHTML = html + '</div>';
+    } else {
+      d.innerHTML = '';
+    }
+  }
+
+  // digit buttons: show how many of each digit remain
+  for (let v = 1; v <= 9; v++) {
+    const left = 9 - counts[v];
+    padBtns[v - 1].querySelector('.cnt').textContent = left > 0 ? left : '';
+    padBtns[v - 1].classList.toggle('done', left <= 0);
+  }
+
+  el('diffChip').textContent = DIFFICULTY[S.difficulty].label;
+  el('mist').textContent = `${S.mistakes} mistake${S.mistakes === 1 ? '' : 's'}`;
+  el('mist').classList.toggle('hidden', !settings.autoCheck);
+  el('btnNotes').classList.toggle('active', S.notesMode);
+}
+
+function fmtTime(s) {
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+function renderTimer() {
+  el('timer').textContent = fmtTime(S.seconds);
+  el('timer').classList.toggle('hidden', !settings.showTimer);
+}
+
+/* ============================================================
+   6. ACTIONS
+   Every action that changes the board first saves a snapshot
+   for Undo, then edits state, then calls render().
+   ============================================================ */
+
+function pushUndo() {
+  S.undo.push({ board: S.board.slice(), notes: S.notes.map((s) => [...s]) });
+  if (S.undo.length > 200) S.undo.shift();
+}
+
+function undo() {
+  const prev = S.undo.pop();
+  if (!prev || S.finished) return;
+  S.board = prev.board;
+  S.notes = prev.notes.map((a) => new Set(a));
+  render();
+}
+
+/** A number button (or key) was pressed. */
+function placeNumber(v) {
+  const i = S.selected;
+  if (S.finished || i < 0 || S.given[i]) return;
+
+  if (S.notesMode) {
+    if (S.board[i] !== 0) return;                     // can't note a filled cell
+    pushUndo();
+    S.notes[i].has(v) ? S.notes[i].delete(v) : S.notes[i].add(v);
+    render();
+    return;
+  }
+
+  pushUndo();
+  if (S.board[i] === v) {
+    S.board[i] = 0;                                   // tap same digit → clear
+  } else {
+    S.board[i] = v;
+    S.notes[i].clear();
+    if (v === S.solution[i]) {
+      // correct: tidy up — remove this digit from pencil marks around it
+      for (const p of PEERS[i]) S.notes[p].delete(v);
+    } else if (settings.autoCheck) {
+      S.mistakes++;
+    }
+  }
+  render();
+  checkWin();
+}
+
+function erase() {
+  const i = S.selected;
+  if (S.finished || i < 0 || S.given[i]) return;
+  if (S.board[i] === 0 && S.notes[i].size === 0) return;
+  pushUndo();
+  S.board[i] = 0;
+  S.notes[i].clear();
+  render();
+}
+
+/** Fill one cell with the right answer (the selected one if possible). */
+function hint() {
+  if (S.finished) return;
+  let target = S.selected;
+  const fixable = (i) => i >= 0 && !S.given[i] && S.board[i] !== S.solution[i];
+  if (!fixable(target)) {
+    const options = [];
+    for (let i = 0; i < 81; i++) if (fixable(i)) options.push(i);
+    if (!options.length) return;
+    target = options[Math.floor(Math.random() * options.length)];
+  }
+  pushUndo();
+  S.board[target] = S.solution[target];
+  S.notes[target].clear();
+  for (const p of PEERS[target]) S.notes[p].delete(S.solution[target]);
+  S.hints++;
+  S.selected = target;
+  render();
+  checkWin();
+}
+
+function checkWin() {
+  for (let i = 0; i < 81; i++) if (S.board[i] !== S.solution[i]) return;
+  S.finished = true;
+  const bits = [];
+  if (settings.showTimer) bits.push(`<b>${fmtTime(S.seconds)}</b> on the clock`);
+  bits.push(`<b>${DIFFICULTY[S.difficulty].label}</b> difficulty`);
+  if (settings.autoCheck) bits.push(`<b>${S.mistakes}</b> mistake${S.mistakes === 1 ? '' : 's'}`);
+  bits.push(`<b>${S.hints}</b> hint${S.hints === 1 ? '' : 's'} used`);
+  el('winStats').innerHTML = bits.join('<br>');
+  el('ovWin').classList.remove('hidden');
+  const stamp = el('stamp');
+  stamp.classList.remove('stamp-in');
+  void stamp.offsetWidth;                             // restart the animation
+  stamp.classList.add('stamp-in');
+}
+
+/* ============================================================
+   7. TIMER & SETTINGS
+   The timer only ticks while the page is visible, so switching
+   apps on your phone pauses the clock automatically.
+   ============================================================ */
+
+setInterval(() => {
+  if (!S.finished && !document.hidden && S.board.length) {
+    S.seconds++;
+    renderTimer();
+  }
+}, 1000);
+
+function openSettings() {
+  el('chkTimer').checked = settings.showTimer;
+  el('chkCheck').checked = settings.autoCheck;
+  el('ovSettings').classList.remove('hidden');
+}
+
+/* ============================================================
+   8. BOOT
+   ============================================================ */
+
+function startNew(diff) {
+  S.difficulty = diff;
+  const { puzzle, solution } = generatePuzzle(diff);
+  S.board = puzzle.slice();
+  S.solution = solution;
+  S.given = puzzle.map((v) => v !== 0);
+  S.notes = Array.from({ length: 81 }, () => new Set());
+  S.selected = -1;
+  S.notesMode = false;
+  S.mistakes = 0;
+  S.hints = 0;
+  S.seconds = 0;
+  S.finished = false;
+  S.undo = [];
+  el('ovNew').classList.add('hidden');
+  el('ovWin').classList.add('hidden');
+  renderTimer();
+  render();
+}
+
+function openNewGame(firstRun) {
+  el('newCancel').classList.toggle('hidden', firstRun);
+  el('ovNew').classList.remove('hidden');
+}
+
+function boot() {
+  buildBoard();
+
+  el('btnUndo').addEventListener('click', undo);
+  el('btnErase').addEventListener('click', erase);
+  el('btnHint').addEventListener('click', hint);
+  el('btnNotes').addEventListener('click', () => { S.notesMode = !S.notesMode; render(); });
+
+  el('btnNew').addEventListener('click', () => openNewGame(false));
+  el('newCancel').addEventListener('click', () => el('ovNew').classList.add('hidden'));
+  document.querySelectorAll('#ovNew [data-d]').forEach((b) =>
+    b.addEventListener('click', () => startNew(b.dataset.d)));
+
+  el('btnGear').addEventListener('click', openSettings);
+  el('setDone').addEventListener('click', () => el('ovSettings').classList.add('hidden'));
+  el('chkTimer').addEventListener('change', (e) => { settings.showTimer = e.target.checked; renderTimer(); });
+  el('chkCheck').addEventListener('change', (e) => { settings.autoCheck = e.target.checked; render(); });
+
+  el('btnAgain').addEventListener('click', () => startNew(S.difficulty));
+  el('btnChange').addEventListener('click', () => {
+    el('ovWin').classList.add('hidden');
+    openNewGame(false);
+  });
+
+  // keyboard support, for when this runs on a computer
+  document.addEventListener('keydown', (e) => {
+    const overlayOpen = document.querySelector('.overlay:not(.hidden)');
+    if (overlayOpen) {
+      if (e.key === 'Escape' && S.board.length) overlayOpen.classList.add('hidden');
+      return;
+    }
+    if (e.key >= '1' && e.key <= '9') placeNumber(Number(e.key));
+    else if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') erase();
+    else if (e.key === 'n' || e.key === 'N') { S.notesMode = !S.notesMode; render(); }
+    else if (e.key === 'h' || e.key === 'H') hint();
+    else if ((e.metaKey || e.ctrlKey) && e.key === 'z') undo();
+    else if (e.key.startsWith('Arrow')) {
+      e.preventDefault();
+      let i = S.selected < 0 ? 0 : S.selected;
+      if (e.key === 'ArrowUp' && i > 8) i -= 9;
+      if (e.key === 'ArrowDown' && i < 72) i += 9;
+      if (e.key === 'ArrowLeft' && i % 9 > 0) i -= 1;
+      if (e.key === 'ArrowRight' && i % 9 < 8) i += 1;
+      S.selected = i;
+      render();
+    }
+  });
+
+  openNewGame(true);                                  // first run: pick a level
+}
+
+boot();
+
+/* ============================================================
+   9. OFFLINE CACHE
+   When the game is served from a real web address, this asks
+   the browser to install sw.js — a tiny background script that
+   saves a copy of the game on the device. After the first
+   visit, the home-screen icon works with no internet at all.
+   ============================================================ */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js');
+}
+</script>
+</body>
+</html>
