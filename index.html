@@ -275,6 +275,27 @@ header .spacer { flex: 1; }
 .win-stats b { color: var(--sumi); }
 h2.center { text-align: center; }
 
+/* ---------- celebration & feedback ---------- */
+.cell.flash { animation: unit-done 1s ease-out both; }
+@keyframes unit-done {
+  0%   { box-shadow: inset 0 0 0 99px color-mix(in srgb, var(--ai) 0%, transparent); }
+  25%  { box-shadow: inset 0 0 0 99px color-mix(in srgb, var(--ai) 32%, transparent); }
+  100% { box-shadow: inset 0 0 0 99px color-mix(in srgb, var(--ai) 0%, transparent); }
+}
+.cell.shake { animation: shake 0.35s ease-in-out; }
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+.num.pop { animation: pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
+@keyframes pop { 50% { transform: scale(1.22); } }
+
+.row-btn small.rec-set { color: var(--shu); font-weight: 700; }
+.record { color: var(--shu); }
+.ver { text-align: center; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
@@ -321,10 +342,10 @@ h2.center { text-align: center; }
 <div class="overlay hidden" id="ovNew">
   <div class="card">
     <h2>New game</h2>
-    <button class="row-btn" data-d="easy">Easy <small>relaxed · 42 clues</small></button>
-    <button class="row-btn" data-d="medium">Medium <small>thoughtful · 34 clues</small></button>
-    <button class="row-btn" data-d="hard">Hard <small>demanding · 29 clues</small></button>
-    <button class="row-btn" data-d="expert">Expert <small>ruthless · ~25 clues</small></button>
+    <button class="row-btn" data-d="easy">Easy <small id="rec-easy">relaxed · pure singles</small></button>
+    <button class="row-btn" data-d="medium">Medium <small id="rec-medium">thoughtful · tighter grid</small></button>
+    <button class="row-btn" data-d="hard">Hard <small id="rec-hard">needs real technique</small></button>
+    <button class="row-btn" data-d="expert">Expert <small id="rec-expert">ruthless</small></button>
     <button class="ghost" id="newCancel">Cancel</button>
   </div>
 </div>
@@ -342,6 +363,7 @@ h2.center { text-align: center; }
       <span class="switch"><input type="checkbox" id="chkCheck" checked><span class="slider"></span></span>
     </div>
     <button class="primary" id="setDone">Done</button>
+    <div class="ver">数独 · v2</div>
   </div>
 </div>
 
@@ -378,10 +400,10 @@ h2.center { text-align: center; }
    ============================================================ */
 
 const DIFFICULTY = {
-  easy:   { label: 'Easy',   clues: 42 },
-  medium: { label: 'Medium', clues: 34 },
-  hard:   { label: 'Hard',   clues: 29 },
-  expert: { label: 'Expert', clues: 25 },
+  easy:   { label: 'Easy',   clues: 43, singles: true  },
+  medium: { label: 'Medium', clues: 34, singles: true  },
+  hard:   { label: 'Hard',   clues: 29, singles: false },
+  expert: { label: 'Expert', clues: 25, singles: false },
 };
 
 /** Fisher–Yates shuffle: returns a randomly ordered copy of an array. */
@@ -461,26 +483,90 @@ function countSolutions(grid, limit = 2) {
 }
 
 /**
- * Make a puzzle: full grid, then carve holes while the solution
- * stays unique. Returns { puzzle, solution } as 81-length arrays.
+ * The 27 "units" of sudoku: 9 rows, 9 columns, 9 boxes.
+ * Used by the human-style solver below.
  */
-function generatePuzzle(difficulty) {
-  const solution = new Array(81).fill(0);
-  fillGrid(solution);
+const UNITS = [];
+for (let r = 0; r < 9; r++) UNITS.push([...Array(9)].map((_, c) => r * 9 + c));
+for (let c = 0; c < 9; c++) UNITS.push([...Array(9)].map((_, r) => r * 9 + c));
+for (let br = 0; br < 9; br += 3)
+  for (let bc = 0; bc < 9; bc += 3) {
+    const box = [];
+    for (let dr = 0; dr < 3; dr++)
+      for (let dc = 0; dc < 3; dc++) box.push((br + dr) * 9 + (bc + dc));
+    UNITS.push(box);
+  }
 
+/**
+ * Try to solve the way a HUMAN does, using only the two easiest
+ * techniques:
+ *   naked single  — a cell where only one digit can go
+ *   hidden single — a digit with only one home left in a unit
+ * Returns true if those alone finish the grid. THIS is the honest
+ * measure of difficulty: clue count says how empty a puzzle is,
+ * technique says how much thinking it demands.
+ */
+function solveWithSingles(grid) {
+  let progress = true;
+  while (progress) {
+    progress = false;
+    // naked singles
+    for (let i = 0; i < 81; i++) {
+      if (grid[i]) continue;
+      let only = 0, n = 0;
+      for (let v = 1; v <= 9; v++) if (canPlace(grid, i, v)) { only = v; n++; }
+      if (n === 0) return false;                      // contradiction
+      if (n === 1) { grid[i] = only; progress = true; }
+    }
+    if (progress) continue;
+    // hidden singles
+    for (const unit of UNITS) {
+      for (let v = 1; v <= 9; v++) {
+        if (unit.some((i) => grid[i] === v)) continue;
+        let spot = -1, n = 0;
+        for (const i of unit) if (!grid[i] && canPlace(grid, i, v)) { spot = i; n++; }
+        if (n === 1) { grid[spot] = v; progress = true; }
+      }
+    }
+  }
+  return grid.indexOf(0) === -1;
+}
+
+/**
+ * Carve holes out of a solved grid. A removal survives only if
+ * the puzzle stays UNIQUE — and, for gentle difficulties, only
+ * if it also stays solvable with singles alone.
+ */
+function carve(solution, target, keepSingles) {
   const puzzle = solution.slice();
-  const target = DIFFICULTY[difficulty].clues;
   let clues = 81;
-
   for (const idx of shuffled([...Array(81).keys()])) {
     if (clues <= target) break;
     const saved = puzzle[idx];
     puzzle[idx] = 0;
-    if (countSolutions(puzzle.slice(), 2) !== 1) {
-      puzzle[idx] = saved;                            // removal broke uniqueness
-    } else {
-      clues--;
-    }
+    const ok = countSolutions(puzzle.slice(), 2) === 1
+            && (!keepSingles || solveWithSingles(puzzle.slice()));
+    if (ok) clues--; else puzzle[idx] = saved;
+  }
+  return puzzle;
+}
+
+/**
+ * Make a puzzle that honestly matches its label. Easy/Medium are
+ * built so singles always suffice. Hard/Expert must NOT fall to
+ * singles — and since random carving usually produces gentle
+ * puzzles, we keep carving fresh grids until one demands more.
+ * Returns { puzzle, solution } as 81-length arrays.
+ */
+function generatePuzzle(difficulty) {
+  const spec = DIFFICULTY[difficulty];
+  let puzzle, solution;
+  for (let attempt = 0; attempt < 14; attempt++) {
+    solution = new Array(81).fill(0);
+    fillGrid(solution);
+    puzzle = carve(solution, spec.clues, spec.singles);
+    const gentle = solveWithSingles(puzzle.slice());
+    if (spec.singles === gentle) break;
   }
   return { puzzle, solution };
 }
@@ -510,6 +596,23 @@ const S = {
 };
 
 const settings = { showTimer: true, autoCheck: true };
+
+/* Tiny safe wrapper around localStorage. On your hosted app it
+   remembers things between visits; anywhere storage is blocked
+   (like a preview pane) it quietly does nothing instead of
+   crashing. Defensive wrappers like this are how real apps
+   survive environments they didn't expect. */
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+Object.assign(settings, store.get('sudoku-settings') || {});
+
+/** Best clean time (no hints) per difficulty, in seconds. */
+const best = Object.assign(
+  { easy: null, medium: null, hard: null, expert: null },
+  store.get('sudoku-best') || {}
+);
 
 /** PEERS[i] = the 20 cells sharing a row, column or box with i. */
 const PEERS = [];
@@ -587,11 +690,18 @@ function render() {
     }
   }
 
-  // digit buttons: show how many of each digit remain
+  // digit buttons: show how many of each digit remain,
+  // with a little pop the moment one is fully placed
   for (let v = 1; v <= 9; v++) {
     const left = 9 - counts[v];
-    padBtns[v - 1].querySelector('.cnt').textContent = left > 0 ? left : '';
-    padBtns[v - 1].classList.toggle('done', left <= 0);
+    const btn = padBtns[v - 1];
+    btn.querySelector('.cnt').textContent = left > 0 ? left : '';
+    const wasDone = btn.classList.contains('done');
+    btn.classList.toggle('done', left <= 0);
+    if (!wasDone && left <= 0 && S.board.length) {
+      btn.classList.add('pop');
+      setTimeout(() => btn.classList.remove('pop'), 500);
+    }
   }
 
   el('diffChip').textContent = DIFFICULTY[S.difficulty].label;
@@ -641,6 +751,7 @@ function placeNumber(v) {
   }
 
   pushUndo();
+  let wrong = false;
   if (S.board[i] === v) {
     S.board[i] = 0;                                   // tap same digit → clear
   } else {
@@ -651,10 +762,13 @@ function placeNumber(v) {
       for (const p of PEERS[i]) S.notes[p].delete(v);
     } else if (settings.autoCheck) {
       S.mistakes++;
+      wrong = true;
     }
   }
   render();
-  checkWin();
+  if (wrong) shake(i);
+  celebrateUnits(i);
+  checkWin(i);
 }
 
 function erase() {
@@ -685,23 +799,93 @@ function hint() {
   S.hints++;
   S.selected = target;
   render();
-  checkWin();
+  celebrateUnits(target);
+  checkWin(target);
 }
 
-function checkWin() {
+/** Brief shake on a cell that just received a wrong number. */
+function shake(i) {
+  cells[i].classList.add('shake');
+  setTimeout(() => cells[i].classList.remove('shake'), 400);
+}
+
+/** Play the fade animation on a set of cells, each starting
+    after delayFn(index) milliseconds — that stagger is what
+    turns a plain flash into a wave. */
+function flashCells(list, delayFn) {
+  for (const k of list) {
+    const d = cells[k];
+    d.style.animationDelay = `${delayFn(k)}ms`;
+    d.classList.remove('flash');
+    void d.offsetWidth;                               // restart the animation
+    d.classList.add('flash');
+  }
+  setTimeout(() => {
+    for (const k of list) {
+      cells[k].classList.remove('flash');
+      cells[k].style.animationDelay = '';
+    }
+  }, 2200);
+}
+
+/** If placing at index i just completed its row, column or box
+    (all nine cells filled AND correct), sweep a fade outward
+    from the tap — a small reward for visible progress. */
+function celebrateUnits(i) {
+  if (i < 0) return;
+  const r = Math.floor(i / 9), c = i % 9;
+  const myUnits = [
+    UNITS[r],                                             // its row
+    UNITS[9 + c],                                         // its column
+    UNITS[18 + Math.floor(r / 3) * 3 + Math.floor(c / 3)] // its box
+  ];
+  for (const unit of myUnits) {
+    if (unit.every((k) => S.board[k] !== 0 && S.board[k] === S.solution[k])) {
+      flashCells(unit, (k) =>
+        (Math.abs(Math.floor(k / 9) - r) + Math.abs((k % 9) - c)) * 45);
+    }
+  }
+}
+
+function checkWin(lastIdx) {
   for (let i = 0; i < 81; i++) if (S.board[i] !== S.solution[i]) return;
   S.finished = true;
-  const bits = [];
-  if (settings.showTimer) bits.push(`<b>${fmtTime(S.seconds)}</b> on the clock`);
-  bits.push(`<b>${DIFFICULTY[S.difficulty].label}</b> difficulty`);
-  if (settings.autoCheck) bits.push(`<b>${S.mistakes}</b> mistake${S.mistakes === 1 ? '' : 's'}`);
-  bits.push(`<b>${S.hints}</b> hint${S.hints === 1 ? '' : 's'} used`);
+
+  // record-keeping: only hint-free solves can set a best time
+  let recordLine;
+  if (S.hints > 0) {
+    recordLine = 'hints used — time not recorded';
+  } else if (best[S.difficulty] === null || S.seconds < best[S.difficulty]) {
+    best[S.difficulty] = S.seconds;
+    store.set('sudoku-best', best);
+    recordLine = '<b class="record">New best time!</b>';
+  } else {
+    recordLine = `your best: <b>${fmtTime(best[S.difficulty])}</b>`;
+  }
+
+  const bits = [
+    `<b>${fmtTime(S.seconds)}</b> · ${DIFFICULTY[S.difficulty].label}`,
+    recordLine,
+  ];
+  bits.push(settings.autoCheck
+    ? `${S.mistakes} mistake${S.mistakes === 1 ? '' : 's'} · ${S.hints} hint${S.hints === 1 ? '' : 's'}`
+    : `${S.hints} hint${S.hints === 1 ? '' : 's'} used`);
   el('winStats').innerHTML = bits.join('<br>');
-  el('ovWin').classList.remove('hidden');
-  const stamp = el('stamp');
-  stamp.classList.remove('stamp-in');
-  void stamp.offsetWidth;                             // restart the animation
-  stamp.classList.add('stamp-in');
+
+  // victory: a wave ripples across the whole board from the
+  // final cell, then the seal stamps down
+  const r0 = lastIdx >= 0 ? Math.floor(lastIdx / 9) : 4;
+  const c0 = lastIdx >= 0 ? lastIdx % 9 : 4;
+  flashCells([...Array(81).keys()], (k) =>
+    Math.hypot(Math.floor(k / 9) - r0, (k % 9) - c0) * 55);
+
+  setTimeout(() => {
+    el('ovWin').classList.remove('hidden');
+    const stamp = el('stamp');
+    stamp.classList.remove('stamp-in');
+    void stamp.offsetWidth;                             // restart the animation
+    stamp.classList.add('stamp-in');
+  }, 900);
 }
 
 /* ============================================================
@@ -747,8 +931,25 @@ function startNew(diff) {
   render();
 }
 
+const DESCS = {
+  easy: 'relaxed · pure singles',
+  medium: 'thoughtful · tighter grid',
+  hard: 'needs real technique',
+  expert: 'ruthless',
+};
 function openNewGame(firstRun) {
   el('newCancel').classList.toggle('hidden', firstRun);
+  // once you hold a record on a level, its row shows YOUR time
+  for (const d of Object.keys(DIFFICULTY)) {
+    const s = el('rec-' + d);
+    if (best[d] !== null) {
+      s.textContent = `best ${fmtTime(best[d])}`;
+      s.classList.add('rec-set');
+    } else {
+      s.textContent = DESCS[d];
+      s.classList.remove('rec-set');
+    }
+  }
   el('ovNew').classList.remove('hidden');
 }
 
@@ -767,8 +968,16 @@ function boot() {
 
   el('btnGear').addEventListener('click', openSettings);
   el('setDone').addEventListener('click', () => el('ovSettings').classList.add('hidden'));
-  el('chkTimer').addEventListener('change', (e) => { settings.showTimer = e.target.checked; renderTimer(); });
-  el('chkCheck').addEventListener('change', (e) => { settings.autoCheck = e.target.checked; render(); });
+  el('chkTimer').addEventListener('change', (e) => {
+    settings.showTimer = e.target.checked;
+    store.set('sudoku-settings', settings);
+    renderTimer();
+  });
+  el('chkCheck').addEventListener('change', (e) => {
+    settings.autoCheck = e.target.checked;
+    store.set('sudoku-settings', settings);
+    render();
+  });
 
   el('btnAgain').addEventListener('click', () => startNew(S.difficulty));
   el('btnChange').addEventListener('click', () => {
