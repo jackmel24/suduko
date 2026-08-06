@@ -363,7 +363,7 @@ h2.center { text-align: center; }
       <span class="switch"><input type="checkbox" id="chkCheck" checked><span class="slider"></span></span>
     </div>
     <button class="primary" id="setDone">Done</button>
-    <div class="ver">数独 · v2</div>
+    <div class="ver">数独 · v4</div>
   </div>
 </div>
 
@@ -375,6 +375,7 @@ h2.center { text-align: center; }
     <div class="win-stats" id="winStats"></div>
     <button class="primary" id="btnAgain">Play again</button>
     <button class="ghost" id="btnChange">Change difficulty</button>
+    <button class="ghost" id="btnCloseWin">Back to the board</button>
   </div>
 </div>
 
@@ -614,6 +615,26 @@ const best = Object.assign(
   store.get('sudoku-best') || {}
 );
 
+/* ---- auto-save ----
+   The game you leave is the game you return to. Called after
+   every move and at the moment the app goes to the background,
+   so closing the app — or iOS quietly evicting it — loses
+   nothing. (Undo history is the one thing not saved.) */
+function saveGame() {
+  if (!S.board.length) return;
+  store.set('sudoku-game', {
+    board: S.board,
+    solution: S.solution,
+    given: S.given,
+    notes: S.notes.map((s) => [...s]),
+    difficulty: S.difficulty,
+    mistakes: S.mistakes,
+    hints: S.hints,
+    seconds: S.seconds,
+    finished: S.finished,
+  });
+}
+
 /** PEERS[i] = the 20 cells sharing a row, column or box with i. */
 const PEERS = [];
 for (let i = 0; i < 81; i++) {
@@ -735,6 +756,7 @@ function undo() {
   S.board = prev.board;
   S.notes = prev.notes.map((a) => new Set(a));
   render();
+  saveGame();
 }
 
 /** A number button (or key) was pressed. */
@@ -769,6 +791,7 @@ function placeNumber(v) {
   if (wrong) shake(i);
   celebrateUnits(i);
   checkWin(i);
+  saveGame();
 }
 
 function erase() {
@@ -779,6 +802,7 @@ function erase() {
   S.board[i] = 0;
   S.notes[i].clear();
   render();
+  saveGame();
 }
 
 /** Fill one cell with the right answer (the selected one if possible). */
@@ -801,6 +825,7 @@ function hint() {
   render();
   celebrateUnits(target);
   checkWin(target);
+  saveGame();
 }
 
 /** Brief shake on a cell that just received a wrong number. */
@@ -929,7 +954,14 @@ function startNew(diff) {
   el('ovWin').classList.add('hidden');
   renderTimer();
   render();
+  saveGame();
 }
+
+/* the moment you swipe away to the home screen, progress is
+   written — the clock also stops ticking while you're gone */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) saveGame();
+});
 
 const DESCS = {
   easy: 'relaxed · pure singles',
@@ -984,6 +1016,16 @@ function boot() {
     el('ovWin').classList.add('hidden');
     openNewGame(false);
   });
+  el('btnCloseWin').addEventListener('click', () => el('ovWin').classList.add('hidden'));
+
+  // tapping the dim backdrop (outside the card) also closes a
+  // dialog — except the very first level picker, which needs an
+  // answer before there's a board to return to
+  for (const id of ['ovNew', 'ovSettings', 'ovWin']) {
+    el(id).addEventListener('click', (e) => {
+      if (e.target === el(id) && S.board.length) el(id).classList.add('hidden');
+    });
+  }
 
   // keyboard support, for when this runs on a computer
   document.addEventListener('keydown', (e) => {
@@ -1009,7 +1051,26 @@ function boot() {
     }
   });
 
-  openNewGame(true);                                  // first run: pick a level
+  // pick up exactly where you left off — or, if there's no game
+  // in progress, ask for a level
+  const saved = store.get('sudoku-game');
+  const intact = saved && !saved.finished && DIFFICULTY[saved.difficulty]
+    && [saved.board, saved.solution, saved.given, saved.notes]
+       .every((a) => Array.isArray(a) && a.length === 81);
+  if (intact) {
+    S.board = saved.board;
+    S.solution = saved.solution;
+    S.given = saved.given;
+    S.notes = saved.notes.map((a) => new Set(a));
+    S.difficulty = saved.difficulty;
+    S.mistakes = saved.mistakes || 0;
+    S.hints = saved.hints || 0;
+    S.seconds = saved.seconds || 0;
+    renderTimer();
+    render();
+  } else {
+    openNewGame(true);                                // first run: pick a level
+  }
 }
 
 boot();

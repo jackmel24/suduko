@@ -5,7 +5,7 @@
    If we ever update the game, bump the version name below so
    phones fetch the fresh copy. */
 
-const CACHE = 'sudoku-v2';
+const CACHE = 'sudoku-v4';
 const FILES = ['./', './index.html', './icon.png'];
 
 self.addEventListener('install', (e) => {
